@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex">
+<title>Admin devoirs</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Patrick+Hand&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main id="app"></main>
+<div id="msg" role="status"></div>
+<script>
+const SB='https://rqcajkhxjtfhyeqfspsv.supabase.co',KEY='sb_publishable_kBEj9Am9cy9wFiKn745PCg_rEj_KhnO';
+const $=q=>document.querySelector(q),app=$('#app');
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const g=k=>{try{return localStorage.getItem(k)}catch(e){return null}},st=(k,v)=>{try{v==null?localStorage.removeItem(k):localStorage.setItem(k,v)}catch(e){}};
+let sess=JSON.parse(g('adm')||'null'),tab='demandes',cache={};
+let mt;function toast(t){const m=$('#msg');m.textContent=t;m.style.display='block';clearTimeout(mt);mt=setTimeout(()=>m.style.display='none',5000)}
+
+async function auth(path,body){
+  const r=await fetch(SB+'/auth/v1/'+path,{method:'POST',headers:{apikey:KEY,'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const j=await r.json().catch(()=>({}));
+  if(!r.ok)throw new Error(j.msg||j.error_description||j.message||'Erreur de connexion');
+  return j;
+}
+function saveSess(j){sess={at:j.access_token,rt:j.refresh_token};st('adm',JSON.stringify(sess))}
+async function api(method,path,body,rpcName,retry=true){
+  const url=SB+(rpcName?'/rest/v1/rpc/'+rpcName:'/rest/v1/'+path);
+  const r=await fetch(url,{method,headers:{apikey:KEY,Authorization:'Bearer '+sess.at,'Content-Type':'application/json',Prefer:'return=representation'},body:body?JSON.stringify(body):undefined});
+  if(r.status===401&&retry){try{saveSess(await auth('token?grant_type=refresh_token',{refresh_token:sess.rt}));return api(method,path,body,rpcName,false)}catch(e){logout();throw new Error('Session expirée')}}
+  const t=await r.text();let j=null;try{j=t?JSON.parse(t):null}catch(e){}
+  if(!r.ok)throw new Error((j&&j.message)||'Erreur');
+  return j;
+}
+function logout(){sess=null;st('adm',null);loginView()}
+
+function loginView(){
+  app.innerHTML=`<h1>🛠️ Espace parent</h1><p class="mu">Connecte-toi pour gérer les classes, les devoirs et les demandes.</p>
+  <form class="box" id="lf"><input name="email" type="email" required placeholder="E-mail" autocomplete="username">
+  <input name="pw" type="password" required minlength="8" placeholder="Mot de passe (8 caractères minimum)" autocomplete="current-password">
+  <div class="row"><button class="btn pri" type="submit">Se connecter</button><button class="btn" type="button" id="su">Créer le compte admin</button></div></form>
+  <p class="mu">Première fois : « Créer le compte admin », confirme l'e-mail reçu, puis connecte-toi. Le premier compte connecté devient l'admin ; ensuite plus personne ne peut le devenir.</p>`;
+  const creds=()=>{const f=new FormData($('#lf'));return{email:f.get('email'),password:f.get('pw')}};
+  $('#lf').onsubmit=async e=>{e.preventDefault();
+    try{saveSess(await auth('token?grant_type=password',creds()));
+      let ok=await api('POST','',{},'is_admin');
+      if(ok!==true){await api('POST','',{},'claim_admin');ok=await api('POST','',{},'is_admin')}
+      if(ok!==true){logout();toast("Ce compte n'est pas l'admin.");return}
+      start()}catch(x){toast(x.message)}};
+  $('#su').onclick=async()=>{if(!$('#lf').reportValidity())return;
+    try{await auth('signup',creds());toast("Compte créé. Confirme l'e-mail reçu, puis connecte-toi.")}catch(x){toast(x.message)}};
+}
+
+const dev=ua=>{ua=ua||'';const mob=/Mobi|iPhone|Android/.test(ua);return(/iPhone|iPad/.test(ua)?'iPhone/iPad':/Android/.test(ua)?'Android':/Windows/.test(ua)?'Windows':/Mac/.test(ua)?'Mac':/Linux/.test(ua)?'Linux':'Autre')+(mob?' (téléphone)':'')};
+const hourFR=d=>parseInt(new Date(d).toLocaleString('fr-FR',{hour:'2-digit',hour12:false,timeZone:'Europe/Paris'}),10)%24;
+const isNight=d=>{const h=hourFR(d);return h>=22||h<6};
+const when=d=>new Date(d).toLocaleString('fr-FR',{weekday:'short',day:'numeric',month:'short',hour:'2-digit',minute:'2-digit',timeZone:'Europe/Paris'});
+
+async function start(){
+  app.innerHTML='<p class="mu">Chargement…</p>';
+  try{
+    const[cl,dm,cx,dv]=await Promise.all([
+      api('GET','classes?select=*&order=created_at'),
+      api('GET','demandes?statut=eq.en_attente&select=id,message,created_at,eleves(prenom,nom,classes(nom))&order=created_at'),
+      api('GET','connexions?select=at,appareil,eleves(prenom,nom,classes(nom))&order=at.desc&limit=150'),
+      api('GET','devoirs?expire_at=gt.'+new Date().toISOString()+'&select=id,matiere,titre,pour_le,expire_at,eleves(prenom,nom),classes(nom)&order=pour_le')]);
+    cache={cl,dm,cx,dv};render();
+  }catch(x){toast(x.message)}
+}
+const act=async(f)=>{try{await f();await start()}catch(x){toast(x.message)}};
+
+function render(){
+  const{cl,dm,cx,dv}=cache;
+  const T=(k,l)=>`<button class="tab ${tab===k?'on':''}" data-t="${k}">${l}</button>`;
+  let body='';
+  if(tab==='classes')body=`<form class="box" id="nc"><div class="grid3"><label>Nom de la classe<input name="nom" required maxlength="60" placeholder="Ex. 5e B"></label>
+    <label>Code (facultatif)<input name="code" maxlength="20" placeholder="auto" autocapitalize="characters"></label>
+    <label>Les devoirs disparaissent après (jours)<input name="duree" type="number" min="1" max="365" value="7"></label>
+    <label>Devoirs par élève<input name="max" type="number" min="1" max="50" value="3"></label></div>
+    <button class="btn pri" type="submit">Créer la classe</button></form>`+(cl.length?cl.map(c=>`<div class="card"><div class="row sp"><b>${esc(c.nom)}</b><span>Code : <b>${esc(c.code)}</b></span></div>
+    <div class="row" style="margin-top:8px"><label class="mu">Disparition (jours) <input style="width:80px" type="number" min="1" max="365" value="${c.duree_jours}" data-cd="${c.id}"></label>
+    <label class="mu">Limite par élève <input style="width:80px" type="number" min="1" max="50" value="${c.max_devoirs}" data-cm="${c.id}"></label>
+    <button class="btn sm" data-cs="${c.id}">Enregistrer</button><button class="btn sm red" data-cx="${c.id}">Supprimer</button></div></div>`).join(''):'<p class="mu">Aucune classe. Crée-en une pour obtenir un code à donner aux élèves.</p>');
+  if(tab==='demandes')body=dm.length?dm.map(d=>`<div class="card"><b>${esc(d.eleves.prenom)} ${esc(d.eleves.nom)}</b> <span class="mu">(${esc(d.eleves.classes.nom)}, ${when(d.created_at)})</span>
+    <p style="margin:6px 0">${esc(d.message)}</p><div class="row"><button class="btn sm pri" data-ok="${d.id}">Accepter (+3 devoirs)</button><button class="btn sm red" data-no="${d.id}">Refuser</button></div></div>`).join(''):'<p class="mu">Aucune demande en attente.</p>';
+  if(tab==='connexions'){const only=$('#nuit')?.checked;const list=cx.filter(c=>!only||isNight(c.at));
+    body=`<label class="row"><input type="checkbox" id="nuit" style="width:20px" ${only?'checked':''}> Seulement la nuit (22 h à 6 h)</label><div style="height:8px"></div>`+
+    (list.length?list.map(c=>`<div class="card ${isNight(c.at)?'night':''}"><b>${esc(c.eleves.prenom)} ${esc(c.eleves.nom)}</b> <span class="mu">(${esc(c.eleves.classes.nom)})</span><br>${when(c.at)}${isNight(c.at)?' 🌙':''} · ${esc(dev(c.appareil))}</div>`).join(''):'<p class="mu">Aucune connexion.</p>')+'<p class="mu">Historique conservé 60 jours. Un élève est compté au plus une fois toutes les 30 minutes.</p>';}
+  if(tab==='devoirs')body=dv.length?dv.map(d=>`<div class="card row sp"><div><span class="tag">${esc(d.matiere)}</span><div class="t">${esc(d.titre)}</div>
+    <div class="mu">${esc(d.classes.nom)} · ${esc(d.eleves.prenom)} ${esc(d.eleves.nom)} · pour le ${d.pour_le}</div></div><button class="btn sm red" data-dd="${d.id}">Supprimer</button></div>`).join(''):'<p class="mu">Aucun devoir actif.</p>';
+  app.innerHTML=`<div class="row sp"><h1>🛠️ Espace parent</h1><button class="btn sm" id="out">Déconnexion</button></div>
+  <div class="tabs">${T('demandes','Demandes'+(dm.length?' ('+dm.length+')':''))}${T('classes','Classes')}${T('connexions','Connexions')}${T('devoirs','Devoirs')}</div>${body}`;
+  $('#out').onclick=logout;
+  app.querySelectorAll('[data-t]').forEach(b=>b.onclick=()=>{tab=b.dataset.t;render()});
+  const n=$('#nuit');if(n)n.onchange=render;
+  const nc=$('#nc');if(nc)nc.onsubmit=e=>{e.preventDefault();const f=new FormData(nc);const code=(f.get('code')||'').trim().toUpperCase();
+    const row={nom:f.get('nom').trim(),duree_jours:+f.get('duree'),max_devoirs:+f.get('max')};if(code)row.code=code;
+    act(()=>api('POST','classes',row))};
+  app.querySelectorAll('[data-cs]').forEach(b=>b.onclick=()=>act(()=>api('PATCH','classes?id=eq.'+b.dataset.cs,{duree_jours:+$(`[data-cd="${b.dataset.cs}"]`).value,max_devoirs:+$(`[data-cm="${b.dataset.cs}"]`).value})));
+  app.querySelectorAll('[data-cx]').forEach(b=>b.onclick=()=>{if(confirm('Supprimer cette classe, ses élèves et leurs devoirs ?'))act(()=>api('DELETE','classes?id=eq.'+b.dataset.cx))});
+  app.querySelectorAll('[data-ok]').forEach(b=>b.onclick=()=>act(()=>api('POST','',{p_id:b.dataset.ok,p_accepter:true,p_extra:3},'admin_traiter_demande')));
+  app.querySelectorAll('[data-no]').forEach(b=>b.onclick=()=>act(()=>api('POST','',{p_id:b.dataset.no,p_accepter:false},'admin_traiter_demande')));
+  app.querySelectorAll('[data-dd]').forEach(b=>b.onclick=()=>act(()=>api('DELETE','devoirs?id=eq.'+b.dataset.dd)));
+}
+
+(async()=>{if(!sess){loginView();return}
+  try{if(await api('POST','',{},'is_admin')===true){start();return}}catch(e){}
+  logout()})();
+</script>
+</body>
+</html>

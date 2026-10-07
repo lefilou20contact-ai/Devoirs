@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Mes devoirs</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Patrick+Hand&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main id="app"></main>
+<div id="msg" role="status"></div>
+<script>
+const SB='https://rqcajkhxjtfhyeqfspsv.supabase.co',KEY='sb_publishable_kBEj9Am9cy9wFiKn745PCg_rEj_KhnO';
+const $=s=>document.querySelector(s),app=$('#app');
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const g=k=>{try{return localStorage.getItem(k)}catch(e){return null}},s=(k,v)=>{try{v==null?localStorage.removeItem(k):localStorage.setItem(k,v)}catch(e){}};
+const ERR={code_invalide:'Code de classe inconnu.',nom_invalide:'Prénom ou nom invalide.',non_connecte:'Session expirée : reconnecte-toi.',limite_atteinte:'Tu as atteint ta limite de devoirs.',deja_en_attente:'Ta demande est déjà en attente.'};
+const MAT=['Maths','Français','Histoire-Géo','Anglais','Sciences','Technologie','Sport','Autre'];
+let tk=g('tk'),me=JSON.parse(g('me')||'null'),data=null,done=JSON.parse(g('done')||'{}');
+const today=()=>new Date().toLocaleDateString('sv-SE');
+const fmt=d=>new Date(d+'T12:00:00').toLocaleDateString('fr-FR',{weekday:'long',day:'numeric',month:'long'});
+let mt;function toast(t){const m=$('#msg');m.textContent=t;m.style.display='block';clearTimeout(mt);mt=setTimeout(()=>m.style.display='none',4500)}
+async function rpc(fn,args){
+  const r=await fetch(SB+'/rest/v1/rpc/'+fn,{method:'POST',headers:{apikey:KEY,'Content-Type':'application/json'},body:JSON.stringify(args)});
+  const t=await r.text();let j=null;try{j=t?JSON.parse(t):null}catch(e){}
+  if(!r.ok){const m=(j&&j.message)||'erreur';const e=new Error(ERR[m]||'Oups, ça n\'a pas marché. Réessaie.');e.code=m;throw e}
+  return j;
+}
+function logout(){tk=null;me=null;data=null;s('tk',null);s('me',null);show()}
+function loginView(){
+  app.innerHTML=`<h1>📚 Mes devoirs</h1><p class="mu">Entre le code de ta classe et ton nom pour retrouver les devoirs.</p>
+  <form class="box" id="lf">
+    <label>Code de la classe<input name="code" required maxlength="20" autocapitalize="characters" autocomplete="off"></label>
+    <div class="grid3"><label>Prénom<input name="prenom" required maxlength="40" autocomplete="given-name"></label>
+    <label>Nom<input name="nom" required maxlength="40" autocomplete="family-name"></label></div>
+    <button class="btn pri" type="submit">Entrer</button>
+    <p class="mu" style="margin:0">À chaque connexion, la date, l'heure et l'appareil utilisé sont enregistrés et visibles par ton parent.</p>
+  </form>`;
+  $('#lf').onsubmit=async e=>{e.preventDefault();const f=new FormData(e.target);
+    try{const r=await rpc('eleve_login',{p_code:f.get('code'),p_prenom:f.get('prenom'),p_nom:f.get('nom'),p_appareil:navigator.userAgent});
+      tk=r.token;me=r;s('tk',tk);s('me',JSON.stringify(r));show()}catch(x){toast(x.message)}};
+}
+async function load(){
+  try{data=await rpc('eleve_devoirs',{p_token:tk,p_appareil:navigator.userAgent})}
+  catch(x){if(x.code==='non_connecte'){toast(x.message);logout();return}toast(x.message)}
+}
+function listHtml(){
+  const t=today(),gr={};
+  (data.devoirs||[]).forEach(d=>(gr[d.pour_le]=gr[d.pour_le]||[]).push(d));
+  const keys=Object.keys(gr).sort();
+  if(!keys.length)return'<div class="card mu">Aucun devoir pour le moment. Si tu en connais un, ajoute-le ci-dessous.</div>';
+  return keys.map(k=>{
+    const late=k<t&&gr[k].some(d=>!done[d.id]);
+    return`<div class="day ${late?'late':''}">${k===t?"Aujourd'hui":fmt(k)}${late?' (en retard)':''}</div>`+gr[k].map(d=>`
+    <div class="card item ${done[d.id]?'done':''}"><input type="checkbox" data-d="${d.id}" ${done[d.id]?'checked':''} aria-label="Fait">
+    <div class="grow"><span class="tag">${esc(d.matiere)}</span><div class="t">${esc(d.titre)}</div>
+    ${d.details?`<div class="d">${esc(d.details)}</div>`:''}<div class="mu">ajouté par ${d.a_moi?'toi':esc(d.par)}</div></div></div>`).join('');
+  }).join('');
+}
+function render(){
+  if(!data){app.innerHTML='<p class="mu">Chargement…</p>';return}
+  const full=data.mes_devoirs>=data.limite;
+  app.innerHTML=`<div class="row sp"><h1>📚 Salut ${esc(me.prenom)}</h1><button class="btn sm" id="out">Quitter</button></div>
+  <p class="mu">Classe : ${esc(me.classe)}</p>${listHtml()}
+  <h2>Ajouter un devoir</h2>
+  <p class="mu">Tu as ajouté ${data.mes_devoirs} devoir(s) sur ${data.limite} autorisés.</p>
+  ${full?`<form class="box" id="rf"><p style="margin:0">Tu as atteint ta limite. Écris un message à ton parent pour pouvoir en ajouter d'autres.</p>
+    ${data.demande_en_attente?'<p class="mu" style="margin:0">Demande envoyée : en attente de réponse.</p>':`<textarea name="m" rows="2" maxlength="300" required placeholder="Pourquoi veux-tu en ajouter d'autres ?"></textarea><button class="btn pri" type="submit">Envoyer ma demande</button>`}</form>`
+  :`<form class="box" id="af">
+    <select name="matiere">${MAT.map(m=>`<option>${m}</option>`).join('')}</select>
+    <input name="titre" required maxlength="120" placeholder="Ex. Exercices 4 et 5 page 82">
+    <textarea name="details" rows="2" maxlength="500" placeholder="Détails (facultatif)"></textarea>
+    <label>Pour le<input name="date" type="date" required value="${today()}"></label>
+    <button class="btn pri" type="submit">Ajouter</button></form>`}`;
+  $('#out').onclick=logout;
+  app.querySelectorAll('[data-d]').forEach(c=>c.onchange=()=>{done[c.dataset.d]=c.checked;s('done',JSON.stringify(done));render()});
+  const af=$('#af');if(af)af.onsubmit=async e=>{e.preventDefault();const f=new FormData(af);
+    try{const r=await rpc('eleve_ajouter_devoir',{p_token:tk,p_matiere:f.get('matiere'),p_titre:f.get('titre'),p_details:f.get('details'),p_pour_le:f.get('date')});
+      if(r.doublon){toast('Un devoir très proche existe déjà : « '+r.titre+' »');return}
+      toast('Devoir ajouté.');await load();render()}
+    catch(x){toast(x.message);if(x.code==='limite_atteinte'){await load();render()}}};
+  const rf=$('#rf');if(rf&&$('#rf textarea'))rf.onsubmit=async e=>{e.preventDefault();
+    try{await rpc('eleve_demander',{p_token:tk,p_message:new FormData(rf).get('m')});toast('Demande envoyée.');await load();render()}catch(x){toast(x.message)}};
+}
+async function show(){if(!tk||!me){loginView();return}render();await load();if(tk)render()}
+show();
+</script>
+</body>
+</html>
